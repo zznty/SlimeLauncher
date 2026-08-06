@@ -54,10 +54,9 @@ class FG2Hacks {
         AtRegistrar atRegistrar = new AtRegistrar();
 
         Map<String, File> coreMap = new HashMap<>();
-        // We're on a legacy Minecraft Version, which means we should be running Java 8, which means the system classloader should be URLClassLoader
-        URLClassLoader urlClassLoader = (URLClassLoader)FG2Hacks.class.getClassLoader();
-        // Fine any coremods from the classpath
-        for (URL url : urlClassLoader.getURLs()) {
+        // Enumerate classpath entries. Prefer URLClassLoader when available (Java 8);
+        // on Java 9+ the app loader is not a URLClassLoader (Cleanroom runs 1.12.2 on Java 25).
+        for (URL url : classpathUrls()) {
             try {
                 searchCoremodAtUrl(url, atRegistrar, coreMap);
             } catch (IOException | InvocationTargetException | IllegalAccessException | URISyntaxException e) {
@@ -80,6 +79,28 @@ class FG2Hacks {
             common.extras.add("net.minecraftforge.gradle.tweakers.CoremodTweaker");
         }
          */
+    }
+
+    private static URL[] classpathUrls() {
+        ClassLoader cl = FG2Hacks.class.getClassLoader();
+        if (cl instanceof URLClassLoader)
+            return ((URLClassLoader) cl).getURLs();
+
+        String cp = System.getProperty("java.class.path", "");
+        if (cp.isEmpty())
+            return new URL[0];
+
+        String[] parts = cp.split(File.pathSeparator);
+        URL[] urls = new URL[parts.length];
+        int n = 0;
+        for (String part : parts) {
+            try {
+                urls[n++] = new File(part).toURI().toURL();
+            } catch (IOException e) {
+                Main.LOGGER.warn("FG2Hacks failed to resolve classpath entry " + part, e);
+            }
+        }
+        return n == urls.length ? urls : Arrays.copyOf(urls, n);
     }
 
     private static void searchCoremodAtUrl(URL url, AtRegistrar atRegistrar, Map<String, File> coreMods) throws IOException, InvocationTargetException, IllegalAccessException, URISyntaxException {

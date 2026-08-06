@@ -25,6 +25,7 @@ import java.lang.invoke.MethodType;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Locale;
+import java.util.Map;
 import java.util.function.Supplier;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -162,17 +163,29 @@ public final class Main {
             if (!dir.exists())
                 dir.mkdirs();
 
-            // We need to build the files like old FG did: https://github.com/MinecraftForge/ForgeGradle/blob/FG_2.3/src/main/resources/net/minecraftforge/gradle/GradleStartCommon.java#L61
+            // Runtime deobf maps for FG2-era FML. Stock FMLDeobfuscatingRemapper parses classic
+            // SRG (CL:/FD:/MD:); some forks parse TSRG instead. Detect from the remapper on the
+            // launch classpath — do not special-case loader names.
+            IMappingFile.Format deobfFormat = detectRuntimeDeobfMapFormat();
+            LOGGER.info("Runtime deobf map format: " + deobfFormat);
 
             IMappingFile toObfMap = IMappingFile.load(toObf); // m->o
             IMappingFile toSrgMap = IMappingFile.load(toSrg); // m->s
             System.setProperty("net.minecraftforge.gradle.GradleStart.srgDir", dir.getCanonicalPath());
-            setup(new File(dir, "notch-srg.srg"), "notch-srg", () -> toObfMap.reverse().chain(toSrgMap));
-            setup(new File(dir, "notch-mcp.srg"), "notch-mcp", toObfMap::reverse);
-            setup(new File(dir, "srg-mcp.srg"), "srg-mcp", toSrgMap::reverse);
-            setup(new File(dir, "mcp-srg.srg"), "mcp-srg", () -> toSrgMap);
-            setup(new File(dir, "mcp-notch.srg"), "mcp-notch", () -> toObfMap);
+            setup(new File(dir, "notch-srg.srg"), "notch-srg", () -> toObfMap.reverse().chain(toSrgMap), IMappingFile.Format.SRG);
+            setup(new File(dir, "notch-mcp.srg"), "notch-mcp", toObfMap::reverse, IMappingFile.Format.SRG);
+            File srgMcp = new File(dir, "srg-mcp.srg");
+            setup(srgMcp, "srg-mcp", toSrgMap::reverse, deobfFormat);
+            setup(new File(dir, "mcp-srg.srg"), "mcp-srg", () -> toSrgMap, IMappingFile.Format.SRG);
+            setup(new File(dir, "mcp-notch.srg"), "mcp-notch", () -> toObfMap, IMappingFile.Format.SRG);
             //System.setProperty("net.minecraftforge.gradle.GradleStart.csvDir", CSV_DIR.getCanonicalPath());
+
+            // FG leaves MCP_TO_SRG={mcp_to_srg} as a passthrough for us to fill after generating SRG files.
+            // Legacy boot mains (LegacyDev / Cleanroom) read that env var and set the srg-mcp system property.
+            // Prefer the property already set by setup(); also push env when the placeholder survived.
+            String mcpToSrgEnv = System.getenv("MCP_TO_SRG");
+            if (mcpToSrgEnv != null && mcpToSrgEnv.contains("{mcp_to_srg}"))
+                setEnv("MCP_TO_SRG", srgMcp.getCanonicalPath());
         }
 
         if (!DISABLE_COREMOD_SEARCH)
@@ -192,10 +205,128 @@ public final class Main {
         return new Launcher(mainClass, mainMethod, mcArgs);
     }
 
-    private static void setup(File file, String name, Supplier<IMappingFile> map) throws IOException {
+    private static void setup(File file, String name, Supplier<IMappingFile> map, IMappingFile.Format format) throws IOException {
         System.setProperty("net.minecraftforge.gradle.GradleStart.srg." + name, file.getCanonicalPath());
+        if (file.exists() && !isMappingFormat(file, format)) {
+            LOGGER.info("Regenerating " + file.getName() + " as " + format + " (cached file was a different format)");
+            if (!file.delete())
+                throw new IOException("Could not delete stale mapping file: " + file.getAbsolutePath());
+        }
         if (!file.exists())
-            map.get().write(file.toPath(), IMappingFile.Format.SRG);
+            map.get().write(file.toPath(), format);
+    }
+
+    /**
+     * Choose the on-disk format for {@code srg-mcp} based on the FML deobf remapper present on the
+     * launch classpath.
+     * <ul>
+     *   <li>Stock Forge FML splits on {@code ": "} and matches {@code CL}/{@code FD}/{@code MD} → {@link IMappingFile.Format#SRG}</li>
+     *   <li>Forks that dropped those tags and parse tab-indented TSRG members → {@link IMappingFile.Format#TSRG}</li>
+     * </ul>
+     * Default is classic SRG when the remapper is absent or unrecognizable.
+     */
+    private static IMappingFile.Format detectRuntimeDeobfMapFormat() {
+        final String remapper = "net.minecraftforge.fml.common.asm.transformers.deobf.FMLDeobfuscatingRemapper";
+        try {
+            Class<?> cls = Class.forName(remapper, false, Main.class.getClassLoader());
+            try (InputStream in = cls.getResourceAsStream("/" + remapper.replace('.', '/') + ".class")) {
+                if (in == null)
+                    return IMappingFile.Format.SRG;
+                byte[] bytes = readAllBytes(in);
+                // Stock embeds the SRG type tags as Utf8 constants; TSRG-style parsers do not.
+                boolean hasSrgTags = classHasUtf8(bytes, "CL") && classHasUtf8(bytes, "FD") && classHasUtf8(bytes, "MD");
+                return hasSrgTags ? IMappingFile.Format.SRG : IMappingFile.Format.TSRG;
+            }
+        } catch (ClassNotFoundException | IOException e) {
+            return IMappingFile.Format.SRG;
+        }
+    }
+
+    /** True if {@code file} already looks like {@code format} (so we can reuse the cache). */
+    private static boolean isMappingFormat(File file, IMappingFile.Format format) throws IOException {
+        try (java.io.BufferedReader reader = java.nio.file.Files.newBufferedReader(file.toPath())) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isEmpty())
+                    continue;
+                boolean prefixed = line.startsWith("CL:") || line.startsWith("PK:") || line.startsWith("FD:") || line.startsWith("MD:");
+                switch (format) {
+                    case SRG:
+                    case XSRG:
+                        return prefixed;
+                    case TSRG:
+                    case TSRG2:
+                        return !prefixed;
+                    default: // unknown: do not force regenerate
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Read an entire stream into a byte array (Java 8 compatible). */
+    private static byte[] readAllBytes(InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) != -1)
+            out.write(buf, 0, n);
+        return out.toByteArray();
+    }
+
+    /** Scan a class file's constant pool for a Utf8 entry equal to {@code value}. */
+    private static boolean classHasUtf8(byte[] classFile, String value) {
+        byte[] utf = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        // CONSTANT_Utf8_info: tag=1, u2 length, bytes
+        for (int i = 0; i + 3 + utf.length <= classFile.length; i++) {
+            if (classFile[i] != 1)
+                continue;
+            int len = ((classFile[i + 1] & 0xFF) << 8) | (classFile[i + 2] & 0xFF);
+            if (len != utf.length)
+                continue;
+            boolean match = true;
+            for (int j = 0; j < utf.length; j++) {
+                if (classFile[i + 3 + j] != utf[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+                return true;
+        }
+        return false;
+    }
+
+    /**
+     * Best-effort process env mutation so LegacyDev/Cleanroom see a resolved MCP_TO_SRG.
+     * May fail on modern JDKs without --add-opens; callers should also set the GradleStart system property.
+     */
+    @SuppressWarnings("unchecked")
+    private static void setEnv(String key, String value) {
+        try {
+            Class<?> pe = Class.forName("java.lang.ProcessEnvironment");
+            for (String fieldName : new String[] { "theEnvironment", "theCaseInsensitiveEnvironment" }) {
+                try {
+                    Field field = pe.getDeclaredField(fieldName);
+                    field.setAccessible(true);
+                    Object map = field.get(null);
+                    if (map instanceof Map)
+                        ((Map<String, String>) map).put(key, value);
+                } catch (Exception ignored) {
+                    // field absent or inaccessible on this JDK
+                }
+            }
+        } catch (Exception e) {
+            try {
+                Map<String, String> env = System.getenv();
+                Field m = env.getClass().getDeclaredField("m");
+                m.setAccessible(true);
+                ((Map<String, String>) m.get(env)).put(key, value);
+            } catch (Exception e2) {
+                LOGGER.warn("Could not set env " + key + " (JDK module lockdown); relying on system properties");
+            }
+        }
     }
 
     private static Class<?> findMainClass(String mainClass) {

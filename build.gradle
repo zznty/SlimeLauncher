@@ -15,7 +15,9 @@ plugins {
 
 gradleutils.displayName = 'Slime Launcher'
 description = 'A slim launcher for Minecraft in the development environment.'
-group = 'net.minecraftforge'
+// Published under net.zznty (instead of upstream net.minecraftforge) to avoid coordinate ambiguity
+// with the upstream artifact — our fork adds TSRG map generation for FG2-era FML forks.
+group = 'net.zznty'
 version = gitversion.tagOffset
 
 println "Version: $version"
@@ -100,7 +102,17 @@ changelog {
 
 publishing {
     repositories {
-        maven gradleutils.publishingForgeMaven
+        // Our Reposilite maven (maven.zznty.ru). Snapshots vs releases is picked from the version.
+        maven {
+            name = 'zznty'
+            url = version.toString().endsWith('-SNAPSHOT')
+                ? 'https://maven.zznty.ru/snapshots'
+                : 'https://maven.zznty.ru/releases'
+            credentials {
+                username = providers.environmentVariable('MAVEN_USER').orElse('').get()
+                password = providers.environmentVariable('MAVEN_PASSWORD').orElse('').get()
+            }
+        }
     }
 
     publications.register('mavenJava', MavenPublication) {
@@ -108,7 +120,6 @@ publishing {
         artifact sourcesJar
 
         changelog.publish(it)
-        gradleutils.promote(it)
 
         pom { pom ->
             name = gradleutils.displayName
