@@ -151,8 +151,6 @@ class LegacyDev {
             paths += File.pathSeparator + cache.getAbsolutePath();
         System.setProperty("java.library.path", paths);
 
-        // startup, so post-startup System.setProperty actually works on Java 9+.
-
         // Add the library path to the classloader if it has already been cached. It shouldn't be by now, and this only matters on java <= 8 so this reflection should be fairly safe
         try {
             final String[] usrPathsValue = paths.split(File.pathSeparator);
