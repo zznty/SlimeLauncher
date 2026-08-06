@@ -88,7 +88,29 @@ class LegacyDev {
                     zipEntry:
                     for (Enumeration<? extends ZipEntry> en = zip.entries(); en.hasMoreElements(); ) {
                         ZipEntry entry = en.nextElement();
-                        File output = new File(cache, entry.getName());
+
+                        // Determine the output name, skipping 32-bit ELF on 64-bit JVMs.
+                        // LWJGL2 natives jars bundle both 32- and 64-bit .so files; the 64-bit
+                        // files are suffixed "64" (liblwjgl64.so) but System.loadLibrary("lwjgl")
+                        // looks for liblwjgl.so — so rename only the lwjgl binary.
+                        String outputName = entry.getName();
+                        if (outputName.toLowerCase(java.util.Locale.ROOT).endsWith(".so")) {
+                            // Peek at the ELF header to determine the class.
+                            byte[] hdr = new byte[5];
+                            InputStream probe = zip.getInputStream(entry);
+                            int read = probe.read(hdr);
+                            probe.close();
+                            if (read == 5 && hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F') {
+                                if (hdr[4] == 1) { // ELFCLASS32
+                                    continue zipEntry; // 32-bit .so — incompatible with 64-bit JVM
+                                }
+                                if (hdr[4] == 2 && outputName.startsWith("liblwjgl64")) {
+                                    outputName = "liblwjgl.so";
+                                }
+                            }
+                        }
+
+                        File output = new File(cache, outputName);
                         if (output.exists())
                             continue; // Assume its valid is already extracted
 
@@ -128,6 +150,11 @@ class LegacyDev {
         else
             paths += File.pathSeparator + cache.getAbsolutePath();
         System.setProperty("java.library.path", paths);
+
+        // LWJGL 2 and JInput read these properties at library load time, not at JVM
+        // startup, so post-startup System.setProperty actually works on Java 9+.
+        System.setProperty("org.lwjgl.librarypath", cache.getAbsolutePath());
+        System.setProperty("net.java.games.input.librarypath", cache.getAbsolutePath());
 
         // Add the library path to the classloader if it has already been cached. It shouldn't be by now, and this only matters on java <= 8 so this reflection should be fairly safe
         try {
