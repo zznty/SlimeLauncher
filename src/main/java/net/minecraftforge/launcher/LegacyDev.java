@@ -151,10 +151,7 @@ class LegacyDev {
             paths += File.pathSeparator + cache.getAbsolutePath();
         System.setProperty("java.library.path", paths);
 
-        // LWJGL 2 and JInput read these properties at library load time, not at JVM
         // startup, so post-startup System.setProperty actually works on Java 9+.
-        System.setProperty("org.lwjgl.librarypath", cache.getAbsolutePath());
-        System.setProperty("net.java.games.input.librarypath", cache.getAbsolutePath());
 
         // Add the library path to the classloader if it has already been cached. It shouldn't be by now, and this only matters on java <= 8 so this reflection should be fairly safe
         try {
