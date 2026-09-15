@@ -83,8 +83,8 @@ public final class Main {
             .withRequiredArg().ofType(String.class).defaultsTo(Constants.RESOURCES_URL);
 
         // metadata
-        ArgumentAcceptingOptionSpec<File> metadataZip0 = parser
-            .accepts("metadata", "The metadata.zip to use for runs")
+        ArgumentAcceptingOptionSpec<File> metadataO = parser
+            .accepts("metadata", "The metadata directory or zip to use for runs")
             .withRequiredArg().ofType(File.class);
 
         // main
@@ -104,7 +104,7 @@ public final class Main {
             .withRequiredArg().ofType(String.class);
 
         Package pkg = Main.class.getPackage();
-        LOGGER.info(pkg.getImplementationTitle() + " " + pkg.getImplementationVersion());
+        LOGGER.info(pkg.getImplementationTitle() + ' ' + pkg.getImplementationVersion());
 
         SplitArgs _split = new SplitArgs(rawArgs);
         String[] slArgs = _split.sl;
@@ -122,8 +122,7 @@ public final class Main {
         File cache = options.valueOf(cache0);
         File assets = options.valueOf(assetsO);
         String assetsRepo = options.valueOf(assetsRepo0);
-        // TODO [SlimeLauncher][Jonathing] CHANGE THIS TO DIR! It is already extracted by FG7!
-        File metadataZip = options.valueOf(metadataZip0);
+        File metadata = options.valueOf(metadataO);
         String mainClass = options.valueOf(mainClassO);
         File toObf = options.valueOf(toObfO);
         File toSrg = options.valueOf(toSrgO);
@@ -144,10 +143,17 @@ public final class Main {
         }
 
         MinecraftVersion versionJson;
-        try (ZipFile zip = new ZipFile(metadataZip)) {
-            versionJson = JsonData.minecraftVersion(
-                extract(zip, "minecraft/version.json", cache)
-            );
+        if (metadata.isDirectory()) {
+            File versionJsonFile = new File(metadata, "minecraft/version.json");
+            if (versionJsonFile.exists()) versionJson = JsonData.minecraftVersion(versionJsonFile);
+            else throw new FileNotFoundException("Missing minecraft/version.json in " + metadata.getAbsolutePath());
+        } else if (metadata.isFile()) {
+            try (ZipFile zip = new ZipFile(metadata)) {
+                File versionJsonFile = extract(zip, "minecraft/version.json", cache);
+                versionJson = JsonData.minecraftVersion(versionJsonFile);
+            }
+        } else {
+            throw new IllegalArgumentException("Invalid metadata path: " + metadata.getAbsolutePath());
         }
 
         if (isClient) {

@@ -25,7 +25,9 @@ import net.minecraftforge.srgutils.MinecraftVersion;
 
 import org.jetbrains.annotations.Nullable;
 
-class FG2Hacks {
+final class FG2Hacks {
+    private FG2Hacks() {}
+
     /* ----------- COREMOD AND AT HACK --------- */
     // coremod hack
     private static final String           COREMOD_VAR    = "fml.coreMods.load";

@@ -27,7 +27,9 @@ import java.util.zip.ZipFile;
 
 /// This is the SlimeLauncher replacement for [LegacyDev](https://github.com/MinecraftForge/LegacyDev/).
 /// Which was written to Bridge 1.12.2 to FG3+
-class LegacyDev {
+final class LegacyDev {
+    private LegacyDev() {}
+
     static final Logger LOGGER = Main.LOGGER;
     static final String LEGACYDEV = "net.minecraftforge.legacydev.";
     static final String LEGACYDEV_CLIENT = LEGACYDEV + "MainClient";
